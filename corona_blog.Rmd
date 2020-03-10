@@ -1,0 +1,637 @@
+---
+title: 'PRELIMINARY ANALYSIS: Princess Diamond Corona Virus Risk Analysis'
+output:
+  html_document:
+    df_print: paged
+  word_document: default
+  html_notebook: default
+---
+
+# Introduction
+
+This report is a preliminary analysis of the risk of infection (symptomatic and asymptomatic) and death (mortality rate) from the corona virus.  The analysis is based on the data derived from the Diamond Princess, a cruise ship which experienced an outbreak of the virus in February 2020.  The passengers and crew were forced into a quarantine on the boat for a period of time. The quarantine had the unintended consequence of exposing the people to the virus and dramatically increasing the rates of infection.  In total, there were 3,711 people on the boat, 619 became infected and to-date 7 have died.
+
+The current date of this analysis is March 10, 2020.
+
+The Diamond Princess data is unique in that all (or almost all) the passengers and crew were tested for the virus.  As far as I know, this is the only meaningful data set where the denominator of the corona risk rates is known. However, there are still a significant number of passengers who have not recovered, or worse, are still in critical condition. Therefore, the numerator of the risk rates of death is only partially known.  On the other hand, the risk rates of infection are known.
+
+**Warning**: This analysis is a "naive" analysis, in that I do not adjust for future expected deaths.  The mortality rates therefore represent a floor.  I will comment on this further in the report.
+
+# Summary of Results
+
+* The mortality rate for those below age 60 is very low.  The mortality rate increases from age 60 and is very high for those age 70 and above: about 1% for 70s, 8% for the 80% and 16% in the 90s. That is, mortality risk is highly skewed towards the elderly. 
+* The risk of infection is high across all ages.  The belief that young children or young adults are not susceptible to infection is false. 
+* The risk of becoming symptomatic is also high across all ages.
+* The risk of symptomatic and asymptomatic infection increases significantly from age 50 onwards
+* Roughly half the infected population is asymptomatic.
+
+# Methodology
+
+Software: I used [Greta](https://greta-stats.org/index.html) and [Greta GP](https://github.com/greta-dev/greta.gp) to conduct a Bayesian analysis.  
+
+Models:  The *basic model* is binomial model with a uniform prior assumption on the risk probability.  For the youngest and very oldest ages there is very little data and this prior influences the results.
+
+I developed a model combining all age groups and a model that analyzed each age group separately.  For the latter, I used two types of models:
+1. The first model assumes each age category is independent from the others.
+2. The second model assumes a correlation structure between each age category.  This was achieved by applying a latent Gaussian Process over the age-dependent risk parameters, using a RBF (radial basis function) kernel.  I tested two GP models.  
+2.1. The first fixed the $\rho$ parameter of the RBF at 10 years.  That is, the correlation between age x and x+d is $e^{-(\frac{d}{\rho})^2}$. So if $d=10$ and $\rho=10$, the correlation between two adjacent 10-year age buckets is  $e^{-(\frac{10}{10})^2}=0.36$.  If $\rho=20$, the correlation is 0.778. The tested model fixed $\rho=10$.
+2.2. The second model, treated $\rho$ as a parameter.  For this second model, I set the prior for $\rho$ to have a mean of 20 and a standard deviation of 5.  The model estimated the posterior mean value of $\rho$ of 22 with a 95% credible interval of 14 to 35. 
+
+The GP Model under 2.2 represents an *advanced model* and I think gives a more accurate analysis of the mortality rates. The GP model has the advantage of smoothing out the risk rates across the age buckets and recognizing that the risk rates between age buckets is almost certainly correlated.
+
+# Recommended Actions
+
+Disclaimer: I am not an epidemiologist so my analysis is very much one of an armchair scientist. However, I am an actuary, so I know a thing or two about risk rates.
+
+The analysis suggests the following:
+
+* There will be a lot of people walking around asymptomatic but capable of spreading the disease.  Social distancing will be key to avoiding the spread of the disease. Also, if face masks are helpful in stopping an infected person from spreading the diseases, then for sure, people in crowds should be wearing masks even if they feel healthy.  The Surgeon Generals suggestion not to wear a mask (assuming they are available - which they are currently not) is ridiculous.
+* The elderly need to exhibit extreme caution.
+* Even if you are healthy and young, the risk of an outbreak on a cruise line is very high and the chance of being forced into an involuntary quarantine seems, to me, to be higher than I would be willing to bear.
+* Likewise, avoiding large gatherings would be preferred.  We are starting to see the closing of college classes and schools.  I expect this to accelerate.
+
+# Future Deaths
+
+Based on my quick analysis, it would not surprise me if there will be additional deaths in the exposed population.  Most of the infections have now occured at least 20 days ago.  I would expect the mortality rates to possibly climb proportiontely by 20% to 50% (e.g. a 10% "naive" mortality rates could translate to an ultimate 12% to 15% rate), but am doubtful these ultimate mortality rates would double over the naive levels.  This area still need further analysis (see Russel below for more information).
+
+However, the analysis below is very useful in its own right, even ignoring future deaths.
+
+
+The next sections go through the detail of the code and the analysis.  To skip to the final results, go to the *"Summary of Results"* section at the end of the report. 
+
+
+# Data Sources
+
+[Russel et al](https://cmmid.github.io/topics/covid19/severity/diamond_cruise_cfr_estimates.html)
+[National Institute of Infectious Diseases](https://www.niid.go.jp/niid/en/2019-ncov-e.html)
+[Wikipedia](https://en.wikipedia.org/wiki/2020_coronavirus_outbreak_on_cruise_ships#Diamond_Princess)
+
+
+Note that Russel conducts a similar analysis but adjusts for outstanding deaths.  My data of the age distribution differ from Russel and are based on information from Wikipedia.  There are 7 deaths, 4 in the 80s, 2 in the 70s and 1 unknown. I assigned the unknown proportionately to the 80s and 70s buckets.
+
+# Initialize Data
+
+```{r setup, include=FALSE, echo=FALSE}
+#knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r echo=TRUE, message=FALSE}
+# Time Series Analysis of Survival from Breast Cancer
+
+library(greta)
+library(greta.gp)
+library(ggplot2)
+library(dplyr)
+library(purrr)
+library(tidyr)
+library(readr)
+library(stringr)
+library (bayesplot)
+
+# MCMC Pars
+n_samples_base = 1000
+warmup_base = 250
+chains_base = 20
+
+# Set Directories
+working_dir = paste0(getwd(), "/")
+data_dir = paste0(working_dir, "data/")
+
+# Load Data
+diamond = read_csv(file = paste0(data_dir, "diamond.csv"))
+head(diamond, 10)
+
+```
+
+
+# Infection Rate Analysis
+
+
+### Greta Infection Rate Analysis
+
+
+#### Beta Binom Model: Single Parameter
+
+```{r}
+
+# Identify the data input for Greta using the as_data function
+
+categories=1
+infected = as_data(diamond$confirmed)
+exposure = as_data(diamond$exposure)
+deaths = as_data(diamond$deaths)
+symptomatic = as_data(diamond$symptomatic)
+asymptomatic = as_data(diamond$asymptomatic)
+
+
+# Define the prior for the theta parameter
+theta_infected = beta(shape1 = 1, shape2 = 1, dim = categories)
+theta_symptomatic = beta(shape1 = 1, shape2 = 1, dim = categories)
+theta_asymptomatic = beta(shape1 = 1, shape2 = 1, dim = categories)
+theta_deaths = beta(shape1 = 1, shape2 = 1, dim = categories)
+  
+# Define the likehood for the model
+distribution(infected) = binomial(size = exposure, prob = theta_infected)  
+distribution(symptomatic) = binomial(size = exposure, prob = theta_symptomatic)  
+distribution(asymptomatic) = binomial(size = exposure, prob = theta_asymptomatic)
+distribution(deaths) = binomial(size = infected, prob = theta_deaths) 
+
+```
+
+We can now establish and compile the model:
+
+```{r results="hide"}
+# Establish the model
+m= model(theta_infected, theta_symptomatic, theta_asymptomatic, theta_deaths)
+
+n_samples = n_samples_base; chains=chains_base; warmup=warmup_base
+S = n_samples * chains # Total number of simulations
+draws=mcmc(m, n_samples = n_samples, warmup = warmup,chains = chains)
+
+```
+
+
+```{r}
+# Organize Output for Plotting
+theta_post = 
+  draws %>% 
+  reduce(rbind)
+colnames(theta_post) = 
+  paste0(rep(c("theta_infected_","theta_symptomatic_","theta_asymptomatic_", "theta_deaths_"),
+             each=categories) , 1:categories)
+theta_post = cbind(S=1:S,as_tibble(theta_post)) %>%
+  gather(posterior, value, -S) %>%
+  mutate(risk_cat = as.factor(gsub(pattern = "_([^_]*)$","",(posterior))), 
+           age_cat = as.factor((as.numeric(extract_numeric(posterior)))*10-5)
+         )
+
+combined_risk_rates = ggplot(theta_post) +
+  geom_violin(aes(risk_cat, value, fill=risk_cat), alpha=0.2) +
+  labs(title="Diamond Princess: Overall Risks\nInfection, Symptomatic, Asymptomatic, Death", color="", x="Risk Rate", y="Distribution", fill="Risk Category") + 
+  theme_bw()+
+  facet_wrap(~risk_cat, scales="free")
+combined_risk_rates
+```
+
+
+
+
+#### Beta Binom Model: Vector Parameter
+
+This model assumes that each age category is independent from the others.
+
+```{r}
+
+# Identify the data input for Greta using the as_data function
+
+categories = nrow(diamond)
+exposure = as_data(diamond$exposure)
+
+infected = as_data(diamond$confirmed)
+symptomatic= as_data(diamond$symptomatic)
+asymptomatic= as_data(diamond$asymptomatic)
+deaths = as_data(diamond$deaths)
+
+
+# Define the prior for the theta parameter
+theta_infected = beta(shape1 = 1, shape2 = 1, dim = categories)
+theta_symptomatic = beta(shape1 = 1, shape2 = 1, dim = categories)
+theta_asymptomatic = beta(shape1 = 1, shape2 = 1, dim = categories)
+theta_deaths = beta(shape1 = 1, shape2 = 1, dim = categories)
+  
+# Define the likehood for the model
+distribution(infected) = binomial(size = exposure, prob = theta_infected, dim = categories)  
+distribution(symptomatic) = binomial(size = exposure, prob = theta_symptomatic, dim = categories)  
+distribution(asymptomatic) = binomial(size = exposure, prob = theta_asymptomatic, dim = categories)
+distribution(deaths) = binomial(size = infected, prob = theta_deaths, dim = categories)  
+```
+
+We can now establish and compile the model:
+
+```{r results="hide"}
+# Establish the model
+m_vec= model(theta_infected, theta_symptomatic, theta_asymptomatic, theta_deaths)
+
+n_samples = n_samples_base; chains=chains_base; warmup=warmup_base
+
+S = n_samples * chains # Total number of simulations
+draws_vec=mcmc(m_vec, n_samples = n_samples, warmup = warmup,chains = chains)
+
+```
+
+
+```{r}
+# Organize Output for Plotting
+theta_post_vec = 
+  draws_vec %>% 
+  reduce(rbind)
+colnames(theta_post_vec) = 
+  paste0(rep(c("theta_infected_","theta_symptomatic_","theta_asymptomatic_", "theta_deaths_"),
+             each=categories) , 1:categories)
+theta_post_vec = cbind(S=1:S,as_tibble(theta_post_vec)) %>%
+  gather(posterior, value, -S) %>%
+  mutate(risk_cat = as.factor(gsub(pattern = "_([^_]*)$","",(posterior))), 
+         age_cat = as.factor((as.numeric(extract_numeric(posterior)))*10-5)
+  )
+
+
+theta_post_vec_sum = theta_post_vec  %>%
+  filter(risk_cat == "theta_deaths") %>%
+  group_by(age_cat) %>%
+  summarize(mean = mean(value),
+            low = quantile(value, 0.1),
+            high = quantile(value, 0.9)
+            ) %>%
+  gather(range, value, -mean, -age_cat)
+
+ggplot(theta_post_vec_sum) +
+  geom_point(aes(age_cat, mean, color = age_cat),size=2) +
+  geom_line(aes(age_cat, value, group = age_cat)) +
+  labs(title="Diamond Princess: Risk of Death\n with 80% Credible Interval", color="", y="Mortality Rate", x="Age") + 
+  theme_bw()
+
+
+
+# ggplot(theta_post_vec %>% filter(risk_cat != "theta_deaths")) +
+#   geom_density(aes(value, fill=(age_cat)), alpha=0.2) +
+#   labs(title="Diamond Princess: Risk of Infection", color="") + 
+#   facet_wrap(~risk_cat, scales = "free")+
+#   theme_bw()
+
+
+vector_risk_rates = ggplot(theta_post_vec %>% filter(risk_cat != "theta_deaths")) +
+  geom_violin(aes(age_cat, value, fill = age_cat), alpha=0.5, draw_quantiles = c(0.1, 0.5, 0.9), scale = "width") +
+  labs(title="Diamond Princess: Risk of Infection", color="", y="Infection Rate", x="Age", fill="Risk Category") + 
+  facet_wrap(~risk_cat, scales = "free")+
+  ylim(0,.5)+
+  theme_bw()
+vector_risk_rates
+
+# ggplot(theta_post_vec %>% filter(risk_cat == "theta_deaths")) +
+#   geom_violin(aes(age_cat, value, fill = age_cat), alpha=0.5, draw_quantiles = c(0.1, 0.5, 0.9), scale = "width") +
+#   labs(title="Diamond Princess: Risk of Death from Infection", color="", y="Death Rate", x="Age", fill="Risk Category") +   facet_wrap(~risk_cat, scales = "free")+
+#   ylim(0,.5)+
+#   theme_bw()
+
+risk_band = theta_post_vec %>% filter(risk_cat == "theta_deaths") %>%
+  group_by(age_cat) %>%
+  summarize(mortality_mean = mean(value),
+            mortality_low = quantile(value, probs = .1),
+            mortality_high = quantile(value, probs = .9)) %>% 
+  mutate(age= as.numeric(as.character(age_cat)))
+
+vector_mortality_rates = ggplot(risk_band ) +
+  geom_line(aes(age, mortality_mean)) + 
+  geom_ribbon(aes(age, ymin=mortality_low, ymax=mortality_high), fill= "blue", alpha=.2)+
+  theme_bw() + 
+  labs(title="Independent Model - Mortality Rate: 80% Credible Interval", y= "Mortality Rate", x="Age")+
+  scale_x_continuous(breaks = diamond$age)
+vector_mortality_rates 
+risk_band
+
+```
+
+
+
+Notes: There are very limited data for the age categories 5, 15 and 95.  Here the uniform plays an outsize role, the resultant posterior values for these age buckets suggests a uniform prior might not be the most optimal prior, and a prior skewed towards lower risk rates might be more appropriate. 
+
+#### Gaussian Process Model - Fixed Rho
+
+```{r}
+
+# Identify the data input for Greta using the as_data function
+
+categories = nrow(diamond)
+exposure = as_data(diamond$exposure)
+ages = as_data(diamond$age)
+
+infected = as_data(diamond$confirmed)
+symptomatic= as_data(diamond$symptomatic)
+asymptomatic= as_data(diamond$asymptomatic)
+deaths = as_data(diamond$deaths)
+
+
+# Define the prior for the theta parameter
+#theta_infected = beta(shape1 = 1, shape2 = 1, dim = categories)
+#theta_symptomatic = beta(shape1 = 1, shape2 = 1, dim = categories)
+#theta_asymptomatic = beta(shape1 = 1, shape2 = 1, dim = categories)
+
+eta_deaths = lognormal(0, 20)
+
+rho_deaths = 10 
+
+# kernel & GP
+kernel = rbf(rho_deaths, eta_deaths) 
+f = gp(ages, kernel)  
+theta_deaths = ilogit(f) # convert to unit interval
+
+# Define the likehood for the model
+#distribution(infected) = binomial(size = exposure, prob = theta_infected, dim = categories)  
+#distribution(symptomatic) = binomial(size = exposure, prob = theta_symptomatic, dim = categories)  
+#distribution(asymptomatic) = binomial(size = exposure, prob = theta_asymptomatic, dim = categories)
+distribution(deaths) = binomial(size = infected, prob = theta_deaths, dim = categories)  
+
+```
+
+We can now establish and compile the model:
+
+```{r results="hide"}
+# Establish the model
+#m_gp= model(theta_deaths, eta_deaths, rho_deaths)
+m_gp= model(theta_deaths, eta_deaths) 
+
+n_samples = n_samples_base; chains=chains_base; warmup=warmup_base*4
+
+S = n_samples * chains # Total number of simulations
+draws_gp=mcmc(m_gp, n_samples = n_samples, warmup = warmup,chains = chains)
+
+```
+
+
+```{r}
+# diagnostics
+theta_names = colnames(draws_gp[[1]])
+mcmc_trace(draws_gp, pars = theta_names[1:10])
+mcmc_trace(draws_gp, pars = theta_names[11:11])
+mcmc_intervals(draws_gp, pars = theta_names[1:10])
+mcmc_intervals(draws_gp, theta_names[11:11])
+
+summary(draws_gp)
+
+```
+
+
+```{r}
+theta_post_gp = 
+  draws_gp %>% 
+  reduce(rbind) %>%
+  as_tibble() %>%
+  select(-eta_deaths) 
+  
+colnames(theta_post_gp) = 
+  paste0(rep(c( "theta_deaths_"),
+             each=categories) , 1:categories)
+theta_post_gp = cbind(S=1:S,as_tibble(theta_post_gp)) %>%
+  gather(posterior, value, -S) %>%
+  mutate(risk_cat = as.factor(gsub(pattern = "_([^_]*)$","",(posterior))), 
+           age_cat = as.factor((as.numeric(extract_numeric(posterior)))*10-5))
+
+theta_post_gp_sum = theta_post_gp %>%
+  group_by(age_cat) %>%
+  summarize(mean = mean(value),
+            low = quantile(value, 0.1),
+            high = quantile(value, 0.9)
+            ) %>%
+  gather(range, value, -mean, -age_cat)
+
+ggplot(theta_post_gp_sum) +
+  geom_point(aes(age_cat, mean, color = age_cat),size=2) +
+  geom_line(aes(age_cat, value, group = age_cat)) +
+  labs(title="Diamond Princess: Risk of Death", color="", y="Mortality Rate", x="Age") + 
+  theme_bw()
+
+
+
+# ggplot(theta_post_gp ) +
+#   geom_violin(aes(age_cat, value, fill = age_cat), alpha=0.5, draw_quantiles = c(0.1, 0.5, 0.9), scale = "width") +
+#   labs(title="Diamond Princess: Risk of Death", color="", y="Mortality Rate", x="Age") + 
+#   ylim(0,.1)+
+#   theme_bw()
+
+
+ggplot(theta_post_gp_sum) +
+  geom_point(aes(age_cat, mean, color = age_cat),size=2) +
+  geom_line(aes(age_cat, value, group = age_cat)) +
+  labs(title="Diamond Princess: Risk of Death\n with 80% Credible Interval", color="", y="Mortality Rate", x="Age") + 
+  theme_bw()
+
+gp_par =
+  draws_gp %>% 
+  reduce(rbind) %>%
+  as_tibble() %>%
+  select(eta_deaths) %>%
+  gather(par, value)
+
+ggplot(gp_par ) +
+  geom_density(aes(value, fill=par), alpha=0.5) +
+  labs(title="GP Pars") + 
+  facet_wrap(~par, scales = "free")+
+  theme_bw()
+
+
+```
+
+Summary Statistics
+
+```{r}
+risk_band_dependent = theta_post_gp %>%
+  group_by(age_cat) %>%
+  summarize(mortality_mean = mean(value),
+            mortality_low = quantile(value, probs = .1),
+            mortality_high = quantile(value, probs = .9))
+
+gp_mortality_fixed_rho = ggplot(risk_band_dependent %>% mutate(age= as.numeric(as.character(age_cat)))) +
+  geom_line(aes(age, mortality_mean)) + 
+  geom_ribbon(aes(age, ymin=mortality_low, ymax=mortality_high), fill= "blue", alpha=.2)+
+  theme_bw() + 
+  labs(title="GP Model - Mortality Rate: 80% Credible Interval")+
+  scale_x_continuous(breaks = diamond$age)
+gp_mortality_fixed_rho
+
+risk_band_dependent
+
+```
+
+
+
+
+
+#### Gaussian Process Model - Variable Rho
+
+```{r}
+
+# Identify the data input for Greta using the as_data function
+
+categories = nrow(diamond)
+exposure = as_data(diamond$exposure)
+ages = as_data(diamond$age)
+
+infected = as_data(diamond$confirmed)
+symptomatic= as_data(diamond$symptomatic)
+asymptomatic= as_data(diamond$asymptomatic)
+deaths = as_data(diamond$deaths)
+
+
+# Define the prior for the theta parameter
+#theta_infected = beta(shape1 = 1, shape2 = 1, dim = categories)
+#theta_symptomatic = beta(shape1 = 1, shape2 = 1, dim = categories)
+#theta_asymptomatic = beta(shape1 = 1, shape2 = 1, dim = categories)
+
+eta_deaths = lognormal(0, 20)
+
+rho_mean = 20; rho_sd = 5
+rho_deaths = lognormal(log(rho_mean/sqrt(1+rho_sd^2/rho_mean^2)), sdlog = sqrt(log(1+rho_sd^2/rho_mean^2)))
+
+# kernel & GP
+kernel = rbf(rho_deaths, eta_deaths) 
+f = gp(ages, kernel)  
+theta_deaths = ilogit(f) # convert to unit interval
+
+# Define the likehood for the model
+#distribution(infected) = binomial(size = exposure, prob = theta_infected, dim = categories)  
+#distribution(symptomatic) = binomial(size = exposure, prob = theta_symptomatic, dim = categories)  
+#distribution(asymptomatic) = binomial(size = exposure, prob = theta_asymptomatic, dim = categories)
+distribution(deaths) = binomial(size = infected, prob = theta_deaths, dim = categories)  
+
+```
+
+We can now establish and compile the model:
+
+```{r results="hide"}
+# Establish the model
+#m_gp= model(theta_deaths, eta_deaths, rho_deaths)
+m_gp_var= model(theta_deaths, eta_deaths, rho_deaths) 
+
+n_samples = n_samples_base; chains=chains_base; warmup=warmup_base*4
+S = n_samples * chains # Total number of simulations
+draws_gp_var=mcmc(m_gp_var, n_samples = n_samples, warmup = warmup,chains = chains)
+
+```
+
+
+```{r}
+# diagnostics
+theta_names = colnames(draws_gp_var[[1]])
+mcmc_trace(draws_gp_var, pars = theta_names[1:10])
+mcmc_trace(draws_gp_var, pars = theta_names[11:12])
+mcmc_intervals(draws_gp_var, pars = theta_names[1:10])
+mcmc_intervals(draws_gp_var, theta_names[11:12])
+
+summary(draws_gp_var)
+
+```
+
+
+```{r}
+theta_post_gp_var = 
+  draws_gp_var %>% 
+  reduce(rbind) %>%
+  as_tibble() %>%
+  select(-eta_deaths, -rho_deaths) 
+  
+colnames(theta_post_gp_var) = 
+  paste0(rep(c( "theta_deaths_"),
+             each=categories) , 1:categories)
+
+theta_post_gp_var = as_tibble(theta_post_gp_var) %>%
+  mutate(S=1:S) %>%
+  gather(posterior, value, -S) %>%
+  mutate(risk_cat = as.factor(gsub(pattern = "_([^_]*)$","",(posterior))), 
+           age_cat = as.factor((as.numeric(extract_numeric(posterior)))*10-5))
+
+theta_post_gp_var_sum = theta_post_gp_var %>%
+  group_by(age_cat) %>%
+  summarize(mean = mean(value),
+            low = quantile(value, 0.1),
+            high = quantile(value, 0.9)
+            ) %>%
+  gather(range, value, -mean, -age_cat)
+
+ggplot(theta_post_gp_var_sum) +
+  geom_point(aes(age_cat, mean, color = age_cat),size=2) +
+  geom_line(aes(age_cat, value, group = age_cat)) +
+  labs(title="Diamond Princess: Risk of Death\n with 80% Credible Interval", color="", y="Mortality Rate", x="Age") + 
+  theme_bw()
+
+
+# ggplot(theta_post_gp_var) +
+#   geom_violin(aes(age_cat, value, fill = age_cat), alpha=0.5, draw_quantiles = c(0.1, 0.5, 0.9), scale = "width") +
+#   labs(title="Diamond Princess: Risk of Death", color="", y="Mortality Rate", x="Age") + 
+#   ylim(0,.2)+
+#   theme_bw()
+
+gp_par = 
+  draws_gp_var %>% 
+  reduce(rbind) %>%
+  as_tibble() %>%
+  select(eta_deaths, rho_deaths) %>%
+  gather(par, value)
+
+gp_par_plot = ggplot(gp_par) +
+  geom_density(aes(value, fill=par), alpha=0.5) +
+  labs(title="GP Pars") + 
+  facet_wrap(~par, scales = "free")+
+  theme_bw()
+gp_par_plot
+
+```
+
+```{r}
+risk_band = theta_post_gp_var %>%
+  group_by(age_cat) %>%
+  summarize(mortality_mean = mean(value),
+            mortality_low = quantile(value, probs = .1),
+            mortality_high = quantile(value, probs = .9))
+
+gp_mortality = ggplot(risk_band %>% mutate(age= as.numeric(as.character(age_cat)))) +
+  geom_line(aes(age, mortality_mean)) + 
+  geom_ribbon(aes(age, ymin=mortality_low, ymax=mortality_high), fill= "blue", alpha=.2)+
+  theme_bw() + 
+  labs(title="GP Model - Mortality Rate: 80% Credible Interval")+
+  scale_x_continuous(breaks = diamond$age)
+gp_mortality
+
+risk_band
+
+```
+
+
+
+# Summary of Results
+
+## A. Combined Age Category Model
+
+### Risk Rates
+
+```{r echo=FALSE}
+combined_risk_rates
+```
+
+
+## B. Independent Age Category Model
+
+### Risk Rates
+
+```{r echo=FALSE}
+vector_risk_rates
+vector_mortality_rates
+```
+
+
+## C. Gaussian Process Model: Fixed Rho
+
+Fixed $\rho=10$
+
+### Mortality Rates
+
+```{r echo=FALSE}
+gp_mortality_fixed_rho
+```
+
+
+## C. Gaussian Process Model: Variable Rho
+
+Fixed $\rho=10$
+
+### Mortality Rates
+
+```{r echo=FALSE}
+gp_mortality
+```
+
+### Model Parameters
+
+
+```{r echo=FALSE}
+gp_par_plot
+```
