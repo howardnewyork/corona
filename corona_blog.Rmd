@@ -1,25 +1,27 @@
 ---
 title: 'PRELIMINARY ANALYSIS: Princess Diamond Corona Virus Risk Analysis'
 output:
+  html_notebook: default
+  word_document: default
   html_document:
     df_print: paged
-  word_document: default
-  html_notebook: default
 ---
 
 # Introduction
 
-This report is a preliminary analysis of the risk of infection (symptomatic and asymptomatic) and death (mortality rate) from the corona virus.  The analysis is based on the data derived from the Diamond Princess, a cruise ship which experienced an outbreak of the virus in February 2020.  The passengers and crew were forced into a quarantine on the boat for a period of time. The quarantine had the unintended consequence of exposing the people to the virus and dramatically increasing the rates of infection.  In total, there were 3,711 people on the boat, 619 became infected and to-date 7 have died.
+This report is a preliminary analysis of the risk of infection (symptomatic and asymptomatic) and death (fatality rate or FR) from the corona virus.  The analysis is based on the data derived from the Diamond Princess, a cruise ship which experienced an outbreak of the virus in February 2020.  The passengers and crew were forced into a quarantine on the boat for a period of time. The quarantine had the unintended consequence of exposing the people to the virus and dramatically increasing the rates of infection.  In total, there were 3,711 people on the boat, 619 became infected and to-date 7 have died.
 
 The current date of this analysis is March 10, 2020.
 
 The Diamond Princess data is unique in that all (or almost all) the passengers and crew were tested for the virus.  As far as I know, this is the only meaningful data set where the denominator of the corona risk rates is known. However, there are still a significant number of passengers who have not recovered, or worse, are still in critical condition. Therefore, the numerator of the risk rates of death is only partially known.  On the other hand, the risk rates of infection are known.
 
-**Warning**: This analysis is a "naive" analysis, in that I do not adjust for future expected deaths.  The mortality rates therefore represent a floor.  I will comment on this further in the report.
+**Warning**: This analysis is a "naive" analysis, in that I do not adjust for future expected deaths.  The fatality rates therefore represent a floor.  I will comment on this further in the report.
+
+All code and data can be found on [Github](https://github.com/howardnewyork/corona).
 
 # Summary of Results
 
-* The mortality rate for those below age 60 is very low.  The mortality rate increases from age 60 and is very high for those age 70 and above: about 1% for 70s, 8% for the 80% and 16% in the 90s. That is, mortality risk is highly skewed towards the elderly. 
+* The CFR for those below age 60 is very low.  The fatality rate increases from age 60 and is very high for those age 70 and above: about 1% for 70s, 8% for the 80s and 16% in the 90s. That is, mortality risk is highly skewed towards the elderly. 
 * The risk of infection is high across all ages.  The belief that young children or young adults are not susceptible to infection is false. 
 * The risk of becoming symptomatic is also high across all ages.
 * The risk of symptomatic and asymptomatic infection increases significantly from age 50 onwards
@@ -33,11 +35,12 @@ Models:  The *basic model* is binomial model with a uniform prior assumption on 
 
 I developed a model combining all age groups and a model that analyzed each age group separately.  For the latter, I used two types of models:
 1. The first model assumes each age category is independent from the others.
-2. The second model assumes a correlation structure between each age category.  This was achieved by applying a latent Gaussian Process over the age-dependent risk parameters, using a RBF (radial basis function) kernel.  I tested two GP models.  
+2. The second model assumes a correlation structure between each age category.  This was achieved by applying a latent Gaussian Process over the age-dependent risk parameters, using a RBF (radial basis function) kernel.  I tested two GP models.
+
 2.1. The first fixed the $\rho$ parameter of the RBF at 10 years.  That is, the correlation between age x and x+d is $e^{-(\frac{d}{\rho})^2}$. So if $d=10$ and $\rho=10$, the correlation between two adjacent 10-year age buckets is  $e^{-(\frac{10}{10})^2}=0.36$.  If $\rho=20$, the correlation is 0.778. The tested model fixed $\rho=10$.
 2.2. The second model, treated $\rho$ as a parameter.  For this second model, I set the prior for $\rho$ to have a mean of 20 and a standard deviation of 5.  The model estimated the posterior mean value of $\rho$ of 22 with a 95% credible interval of 14 to 35. 
 
-The GP Model under 2.2 represents an *advanced model* and I think gives a more accurate analysis of the mortality rates. The GP model has the advantage of smoothing out the risk rates across the age buckets and recognizing that the risk rates between age buckets is almost certainly correlated.
+The GP Model under 2.2 represents an *advanced model* and I think gives a more accurate analysis of the fatality rates. The GP model has the advantage of smoothing out the risk rates across the age buckets and recognizing that the risk rates between age buckets is almost certainly correlated.
 
 # Recommended Actions
 
@@ -45,14 +48,14 @@ Disclaimer: I am not an epidemiologist so my analysis is very much one of an arm
 
 The analysis suggests the following:
 
-* There will be a lot of people walking around asymptomatic but capable of spreading the disease.  Social distancing will be key to avoiding the spread of the disease. Also, if face masks are helpful in stopping an infected person from spreading the diseases, then for sure, people in crowds should be wearing masks even if they feel healthy.  The Surgeon Generals suggestion not to wear a mask (assuming they are available - which they are currently not) is ridiculous.
+* There will be a lot of people walking around asymptomatic but capable of spreading the disease.  Social distancing will be key to avoiding the spread of the disease. Also, if face masks are helpful in stopping an infected person from spreading the diseases, then for sure, people in crowds should be wearing masks even if they feel healthy.  The Surgeon General's suggestion not to wear a mask assuming they are available (which they are currently not) is ridiculous.
 * The elderly need to exhibit extreme caution.
 * Even if you are healthy and young, the risk of an outbreak on a cruise line is very high and the chance of being forced into an involuntary quarantine seems, to me, to be higher than I would be willing to bear.
 * Likewise, avoiding large gatherings would be preferred.  We are starting to see the closing of college classes and schools.  I expect this to accelerate.
 
 # Future Deaths
 
-Based on my quick analysis, it would not surprise me if there will be additional deaths in the exposed population.  Most of the infections have now occured at least 20 days ago.  I would expect the mortality rates to possibly climb proportiontely by 20% to 50% (e.g. a 10% "naive" mortality rates could translate to an ultimate 12% to 15% rate), but am doubtful these ultimate mortality rates would double over the naive levels.  This area still need further analysis (see Russel below for more information).
+Based on my quick analysis, it would not surprise me if there will be additional deaths in the exposed population.  Most of the infections have now occured at least 20 days ago.  I would expect the fatality rates to possibly climb proportiontely by 20% to 50% (e.g. a 10% "naive" fatality rates could translate to an ultimate 12% to 15% rate), but am doubtful these ultimate fatality rates would double over the naive levels.  This area still need further analysis (see Russel below for more information).
 
 However, the analysis below is very useful in its own right, even ignoring future deaths.
 
@@ -247,7 +250,7 @@ theta_post_vec_sum = theta_post_vec  %>%
 ggplot(theta_post_vec_sum) +
   geom_point(aes(age_cat, mean, color = age_cat),size=2) +
   geom_line(aes(age_cat, value, group = age_cat)) +
-  labs(title="Diamond Princess: Risk of Death\n with 80% Credible Interval", color="", y="Mortality Rate", x="Age") + 
+  labs(title="Diamond Princess: Risk of Death\n with 80% Credible Interval", color="", y="Fatality Rate", x="Age") + 
   theme_bw()
 
 
@@ -284,7 +287,7 @@ vector_mortality_rates = ggplot(risk_band ) +
   geom_line(aes(age, mortality_mean)) + 
   geom_ribbon(aes(age, ymin=mortality_low, ymax=mortality_high), fill= "blue", alpha=.2)+
   theme_bw() + 
-  labs(title="Independent Model - Mortality Rate: 80% Credible Interval", y= "Mortality Rate", x="Age")+
+  labs(title="Independent Model - Fatality Rate: 80% Credible Interval", y= "Fatality Rate", x="Age")+
   scale_x_continuous(breaks = diamond$age)
 vector_mortality_rates 
 risk_band
@@ -387,14 +390,14 @@ theta_post_gp_sum = theta_post_gp %>%
 ggplot(theta_post_gp_sum) +
   geom_point(aes(age_cat, mean, color = age_cat),size=2) +
   geom_line(aes(age_cat, value, group = age_cat)) +
-  labs(title="Diamond Princess: Risk of Death", color="", y="Mortality Rate", x="Age") + 
+  labs(title="Diamond Princess: Risk of Death", color="", y="Fatality Rate", x="Age") + 
   theme_bw()
 
 
 
 # ggplot(theta_post_gp ) +
 #   geom_violin(aes(age_cat, value, fill = age_cat), alpha=0.5, draw_quantiles = c(0.1, 0.5, 0.9), scale = "width") +
-#   labs(title="Diamond Princess: Risk of Death", color="", y="Mortality Rate", x="Age") + 
+#   labs(title="Diamond Princess: Risk of Death", color="", y="Fatality Rate", x="Age") + 
 #   ylim(0,.1)+
 #   theme_bw()
 
@@ -402,7 +405,7 @@ ggplot(theta_post_gp_sum) +
 ggplot(theta_post_gp_sum) +
   geom_point(aes(age_cat, mean, color = age_cat),size=2) +
   geom_line(aes(age_cat, value, group = age_cat)) +
-  labs(title="Diamond Princess: Risk of Death\n with 80% Credible Interval", color="", y="Mortality Rate", x="Age") + 
+  labs(title="Diamond Princess: Risk of Death\n with 80% Credible Interval", color="", y="Fatality Rate", x="Age") + 
   theme_bw()
 
 gp_par =
@@ -434,7 +437,7 @@ gp_mortality_fixed_rho = ggplot(risk_band_dependent %>% mutate(age= as.numeric(a
   geom_line(aes(age, mortality_mean)) + 
   geom_ribbon(aes(age, ymin=mortality_low, ymax=mortality_high), fill= "blue", alpha=.2)+
   theme_bw() + 
-  labs(title="GP Model - Mortality Rate: 80% Credible Interval")+
+  labs(title="GP Model - Fatality Rate: 80% Credible Interval")+
   scale_x_continuous(breaks = diamond$age)
 gp_mortality_fixed_rho
 
@@ -540,13 +543,13 @@ theta_post_gp_var_sum = theta_post_gp_var %>%
 ggplot(theta_post_gp_var_sum) +
   geom_point(aes(age_cat, mean, color = age_cat),size=2) +
   geom_line(aes(age_cat, value, group = age_cat)) +
-  labs(title="Diamond Princess: Risk of Death\n with 80% Credible Interval", color="", y="Mortality Rate", x="Age") + 
+  labs(title="Diamond Princess: Risk of Death\n with 80% Credible Interval", color="", y="Fatality Rate", x="Age") + 
   theme_bw()
 
 
 # ggplot(theta_post_gp_var) +
 #   geom_violin(aes(age_cat, value, fill = age_cat), alpha=0.5, draw_quantiles = c(0.1, 0.5, 0.9), scale = "width") +
-#   labs(title="Diamond Princess: Risk of Death", color="", y="Mortality Rate", x="Age") + 
+#   labs(title="Diamond Princess: Risk of Death", color="", y="Fatality Rate", x="Age") + 
 #   ylim(0,.2)+
 #   theme_bw()
 
@@ -577,7 +580,7 @@ gp_mortality = ggplot(risk_band %>% mutate(age= as.numeric(as.character(age_cat)
   geom_line(aes(age, mortality_mean)) + 
   geom_ribbon(aes(age, ymin=mortality_low, ymax=mortality_high), fill= "blue", alpha=.2)+
   theme_bw() + 
-  labs(title="GP Model - Mortality Rate: 80% Credible Interval")+
+  labs(title="GP Model - Fatality Rate: 80% Credible Interval")+
   scale_x_continuous(breaks = diamond$age)
 gp_mortality
 
@@ -592,6 +595,8 @@ risk_band
 ## A. Combined Age Category Model
 
 ### Risk Rates
+
+The theta (or $\theta$) amounts represent the parameters of the binomial distribution and are the rates or infection of fatality.
 
 ```{r echo=FALSE}
 combined_risk_rates
@@ -608,11 +613,13 @@ vector_mortality_rates
 ```
 
 
+Notes: There are very limited data for the age categories 5, 15 and 95.  Here the uniform plays an outsize role, the resultant posterior values for these age buckets suggests a uniform prior might not be the most optimal prior, and a prior skewed towards lower risk rates might be more appropriate.
+
 ## C. Gaussian Process Model: Fixed Rho
 
 Fixed $\rho=10$
 
-### Mortality Rates
+### Fatality Rates
 
 ```{r echo=FALSE}
 gp_mortality_fixed_rho
@@ -623,7 +630,7 @@ gp_mortality_fixed_rho
 
 Fixed $\rho=10$
 
-### Mortality Rates
+### Fatality Rates
 
 ```{r echo=FALSE}
 gp_mortality
