@@ -1,0 +1,716 @@
+---
+title: 'Coronavirus Time Series Analysis'
+output:
+  html_notebook: default
+  word_document: default
+  html_document:
+    df_print: paged
+---
+
+# Introduction
+
+
+The current date of this analysis is March 16, 2020.
+
+All code and data can be found on [Github](https://github.com/howardnewyork/corona).
+
+# Summary of Results
+
+
+# Methodology
+
+Software: I used [Greta](https://greta-stats.org/index.html) and [Greta GP](https://github.com/greta-dev/greta.gp) to conduct a Bayesian analysis.  
+
+Models:  The *basic model* is binomial model with a uniform prior assumption on the risk probability.  For the youngest and very oldest ages there is very little data and this prior influences the results.
+
+I developed a model combining all age groups and a model that analyzed each age group separately.  For the latter, I used two types of models:
+1. The first model assumes each age category is independent from the others.
+2. The second model assumes a correlation structure between each age category.  This was achieved by applying a latent Gaussian Process over the age-dependent risk parameters, using a RBF (radial basis function) kernel.  I tested two GP models.
+
+# Recommended Actions
+
+*Disclaimer*: I am not an epidemiologist so my analysis is very much one of an armchair scientist. However, I am an actuary, so I know a thing or two about risk rates.
+
+The analysis suggests the following:
+
+
+# Data Sources
+
+[Johns Hopkins COID-19 Data Repository](https://github.com/CSSEGISandData/COVID-19/compare?expand=1)
+
+# Initialize Data
+
+```{r setup, include=FALSE, echo=FALSE}
+#knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r echo=TRUE, message=FALSE}
+# Time Series Analysis of Survival from Breast Cancer
+
+
+library(rstan)
+options(mc.cores = min(8,parallel::detectCores()))
+rstan_options(auto_write = TRUE)
+
+library(ggplot2)
+library(dplyr)
+library(purrr)
+library(tidyr)
+library(readr)
+library(stringr)
+library (bayesplot)
+library(lubridate)
+library(corrplot)
+
+# MCMC Pars
+n_samples_base = 1000
+warmup_base = 250
+chains_base = 20
+
+# Set Directories
+working_dir = paste0(getwd(), "/")
+data_dir = paste0(working_dir, "data/")
+output_dir = paste0(working_dir, "output/")
+stan_dir = paste0(working_dir, "stan/")
+
+selected_countries = c("Germany", "France", "Spain", "China", "Australia", "US", "South Korea", "Italy",  "United Kingdom")
+selected_countries = c("Italy", "US", "Australia", "South Korea", "China")
+selected_countries = c("Italy", "US",  "South Korea", "China")
+cutoff= 200
+
+# Load Data
+file_date = "2020_03_15"
+corona_raw = read_csv(file = paste0(data_dir, paste0("time_series_19_covid_", file_date, ".csv")))
+head(corona_raw, 10)
+
+corona = corona_raw %>%
+  mutate(country = if_else(country == "Korea, South", "South Korea", country))  %>%  
+  select(-lat, -long, -province_state) %>%
+  group_by(country) %>%
+  summarise_all(sum) %>%
+  gather(date, confirmed, -country) %>%
+  group_by(country) %>%
+  mutate(date = mdy(date)) %>%
+  arrange(date) %>%
+  mutate(growth = confirmed - lag(confirmed),
+         growth_rate = log(confirmed / lag(confirmed))) %>%
+  arrange(date) %>%
+  mutate(growth_rate = ifelse(is.finite(growth_rate), growth_rate, NA))  
+
+
+corona_align = corona %>%
+  filter(country %in% selected_countries,
+         confirmed >=cutoff) %>%
+  ungroup() %>%
+  group_by(country) %>%
+  mutate(day = date-first(date)+1) %>%
+  select(country,confirmed, growth,growth_rate, date, day) %>%
+  arrange(day)
+corona_align
+
+corona 
+corona %>%  filter(country=="China")
+corona %>%  filter(country=="Australia", confirmed >=10) %>% select(date, confirmed, growth_rate, growth_rate) 
+
+```
+
+
+
+# Data Exploration
+
+
+
+
+```{r}
+ggplot(corona %>% filter(country %in% selected_countries)) +
+  geom_line(aes(date,confirmed, color=country)) + 
+  labs(title = "Confirmed Cases by Country", x="date", y="Confirmed Cases")+
+   scale_y_continuous( labels = scales::comma)
+
+ggplot(corona %>% filter(country %in% selected_countries)) +
+  geom_line(aes(date,growth, color=country)) + 
+  labs(title = "Growth in Confirmed Cases by Country", x="date", y="Growth in Confirmed Cases")+
+   scale_y_continuous( labels = scales::comma)
+
+corona %>%  filter(country %in% selected_countries, confirmed >=10) %>% select(date, confirmed, growth_rate, growth_rate) %>% 
+ggplot() +
+  geom_line(aes(date,growth_rate, color=country)) + 
+  labs(title = "Growth in Confirmed Cases by Country", x="date", y="Daily Growth Rate")+
+  scale_y_continuous( labels = scales::comma) +
+  theme_bw() +
+  coord_cartesian(ylim=c(-1, 3))
+
+
+```
+
+Correlation Analysis
+
+```{r}
+
+
+
+ggplot(corona_align ) +
+  geom_line(aes(day,confirmed, color=country)) + 
+  labs(title = "Aligned Confirmed Cases by Country", x=paste0(c("Day >= ", cutoff, " Cases"), collapse = ""), y="Confirmed Cases")+
+   scale_y_continuous( labels = scales::comma)
+
+ggplot(corona_align ) +
+  geom_line(aes(day,growth, color=country)) + 
+  geom_point(aes(day,growth, color=country, shape=country)) + 
+  labs(title = "Aligned Growth in Confirmed Cases by Country", x=paste0(c("Day >= ", cutoff, " Cases"), collapse=""), y="Growth in Confirmed Cases")+
+   scale_y_continuous( labels = scales::comma)
+
+ggplot(corona_align) +
+  geom_line(aes(day,growth_rate, color=country)) + 
+  geom_point(aes(day,growth_rate, color=country, shape=country)) + 
+  labs(title = "Aligned Growth Rate by Country", x=paste0(c("Day >= ", cutoff, " Cases"), collapse=""), y="Daily Growth Rate")+
+  theme_bw() 
+
+
+
+corona_cor = corona_align %>%
+  select(day, country, growth_rate) %>%
+  pivot_wider(names_from = country, values_from = growth_rate) %>%
+  select(-day) %>% 
+  cor(use = "pairwise.complete.obs")
+corrplot(corona_cor[selected_countries, selected_countries])
+
+corona_align %>%
+  group_by(country) %>%
+  group_map(~lm(data = .x,  formula =  growth_rate ~ day ))
+
+
+ave_growth = corona_align %>%
+  group_by(country) %>%
+  summarize(mean_growth = mean(growth_rate, na.rm = T),
+            median_growth = median(growth_rate, na.rm = T) )
+
+ggplot(ave_growth %>% pivot_longer(names_to = "type", values_to = "value", -country)) + 
+  geom_point(aes(country, value, color=type), size=2)+ 
+  labs(title = "Mean and Median Growth") + 
+  theme_bw()
+
+M= lm(data = corona_align, formula =  growth_rate ~ day + country) 
+summary(M)
+M = lm(data = corona_align, formula =  growth_rate ~ day + confirmed + country) 
+summary(M)
+
+M = lm(data = corona_align, formula =  growth_rate ~  confirmed + country) 
+summary(M)
+
+
+corona_align = corona_align %>%
+  filter(is.finite(growth_rate)) %>%
+  mutate(smoothed = predict(loess(formula =  growth_rate ~ as.numeric(day), na.action = na.omit)))
+
+corona_align
+
+ggplot(corona_align) +
+  geom_line(aes(day,smoothed, color=country)) + 
+  geom_point(aes(day,smoothed, color=country, shape=country)) + 
+  labs(title = "Smoothed Aligned Growth Rate by Country", x=paste0(c("Day >= ", cutoff, " Cases"), collapse=""), 
+       y="Daily Growth Rate")+
+  theme_bw() 
+
+
+corona_cor2 = corona_align %>%
+  select(day, country, smoothed) %>%
+  pivot_wider(names_from = country, values_from = smoothed) %>%
+  select(-day) %>% 
+  cor(use = "pairwise.complete.obs")
+corrplot(corona_cor2[selected_countries, selected_countries])
+
+#corr2 = corona_cor2
+
+```
+
+
+# Stan GP Analysis
+
+
+Prepare input
+
+```{r}
+country_count = length(unique(corona_align$country))
+N = nrow(corona_align)
+N_pred = as.numeric(country_count * (max(corona_align$day) - min(corona_align$day)+1))
+
+
+stan_list = list(
+  N1 = N,  # historic data
+  #N2= N_pred,  # predicted points
+  N2= N,  # predicted points
+  D=1, # Dimension of input values
+  dimCat = country_count, # dimension of number oif unique categorical values
+  
+  # Historic Data
+  x1 = matrix(as.numeric(corona_align$day), ncol = 1) ,  # input values (N1 x D matrix from R)
+  x_cat1= as.numeric(as.factor(corona_align$country)),  # input values containing a categorical value
+  y1 = corona_align$growth_rate,  # output values 
+  # Inputs for prediction
+  
+  # x2= matrix(rep(min(corona_align$day):max(corona_align$day), each = country_count), ncol=1),  # input values (N xD matrix from R)
+  # x_cat2 =  rep(1:country_count, times = max(corona_align$day)),  # input values containing a categorical value
+  x2 = matrix(as.numeric(corona_align$day), ncol = 1) ,  # input values (N1 x D matrix from R)
+  x_cat2= as.numeric(as.factor(corona_align$country)),  # input values containing a categorical value
+
+ # inputs for priors on parameters
+ prior_eta = 2,
+ prior_rho = c(5,5),
+ prior_sigma = 1,
+ prior_alpha =2
+)
+str(stan_list)
+```
+
+
+
+Run Stan Model
+
+```{r}
+mod = stan_model(file = paste0(stan_dir, "gp_mod1.stan"))
+draws = sampling(object = mod, data = stan_list , chains = 8, iter = 1000, warmup=300)
+#summary(draws, pars = c("eta", "rho", "sigma", "fStar"))
+```
+
+
+```{r}
+
+country_names = levels(as.factor(corona_align$country))
+
+preds = tibble(
+  day = c(stan_list$x2),
+  country = country_names[stan_list$x_cat2],
+  growth_rate = summary(draws, pars = c("fStar"))$summary[,"mean"]
+)
+
+
+str(preds)
+
+ggplot(preds)  +
+  geom_line(aes(day, growth_rate, color=country)) + 
+  geom_point(aes(day, growth_rate, color=country, shape=country))  +
+  labs(title = paste(c("Daily Growth Rates of Infection following\n", cutoff, " confirmed infections"), collapse =""), x=paste0(c("Day >= ", cutoff, " Cases"), collapse="")) + 
+  coord_cartesian(ylim=c(0, .5))
+  
+
+```
+
+
+
+Correlation Analysis
+
+```{r}
+#summary(draws, pars = "lkj2")$summary
+
+country_cor = matrix(summary(draws, pars = "lkj2")$summary[, "mean"], nrow = country_count)
+rownames(country_cor) = country_names
+colnames(country_cor) = country_names
+country_cor
+
+```
+
+
+
+
+
+# Stan Model with Block Diagonal
+
+```{r}
+mod_block = stan_model(file = paste0(stan_dir, "gp_mod2.stan"))
+
+draws_block = sampling(object = mod_block, data = stan_list , chains = 8, iter = 1000, warmup=300)
+summary(draws, pars = c("eta", "rho", "sigma", "fStar"))
+```
+
+
+```{r}
+
+country_names = levels(as.factor(corona_align$country))
+
+preds_block = tibble(
+  day = c(stan_list$x2),
+  country = country_names[stan_list$x_cat2],
+  growth_rate = summary(draws_block, pars = c("fStar"))$summary[,"mean"]
+)
+
+
+str(preds_block)
+
+ggplot(preds_block)  +
+  geom_line(aes(day, growth_rate, color=country)) + 
+  geom_point(aes(day, growth_rate, color=country, shape=country))  +
+  labs(title = paste(c("Daily Growth Rates of Infection following\n", cutoff, " confirmed infections"), collapse =""), x=paste0(c("Day >= ", cutoff, " Cases"), collapse="")) + 
+  coord_cartesian(ylim=c(0, .5))
+  
+
+```
+
+
+
+
+
+### Greta Projection Analysis
+
+
+#### Beta Binom Model: Single Parameter,
+
+```{r}
+
+# Identify the data input for Greta using the as_data function
+
+library(onehot)
+
+encoder = (onehot(as.data.frame(corona_align$country)))
+predict(encoder,as.data.frame(corona_align$country))
+
+country = as.matrix(predict(encoder,as.data.frame(corona_align$country)))
+country_num = 1:country_count
+country_num = country %*% country_num
+
+index = matrix(1:(country_count^2), country_count, country_count)
+country_rho_index = matrix(0, N, N)
+for (i in 1:N){
+  for (j in 1:N){
+    country_rho_index[i,j] = index[country_num[i],country_num[j]]
+  }
+}
+country_rho_index = c(country_rho_index)
+
+growth_rate = as_data(corona_align$growth_rate)
+day = as_data(as.numeric(corona_align$day))
+country = as_data(country) # one hot encoded
+country_num = as_data(country_num)
+
+# Define the prior for the theta parameter
+eta = lognormal(0,4)
+rho_day = lognormal(0,4)
+rho_country = lkj_correlation(eta = 1, dimension = country_count) *2 -1 
+
+rho_country_long = zeros(country_count^2, 1)
+rho_country_long = rho_country
+
+rho_country_index = rho_country_long[country_rho_index]
+
+rho_country_kernel = zeros(N,N)
+rho_country_kernel = rho_country_index
+
+# kernel & GP
+kernel = rbf(rho_day, eta_deaths) 
+f = gp(ages, kernel)  
+theta_deaths = ilogit(f) # convert to unit interval
+
+# Define the likehood for the model
+#distribution(infected) = binomial(size = exposure, prob = theta_infected, dim = categories)  
+#distribution(symptomatic) = binomial(size = exposure, prob = theta_symptomatic, dim = categories)  
+#distribution(asymptomatic) = binomial(size = exposure, prob = theta_asymptomatic, dim = categories)
+distribution(deaths) = binomial(size = infected, prob = theta_deaths, dim = categories)  
+
+```
+
+We can now establish and compile the model:
+
+```{r results="hide"}
+# Establish the model
+#m_gp= model(theta_deaths, eta_deaths, rho_deaths)
+m_gp= model(theta_deaths, eta_deaths) 
+
+n_samples = n_samples_base; chains=chains_base; warmup=warmup_base*4
+
+S = n_samples * chains # Total number of simulations
+draws_gp=mcmc(m_gp, n_samples = n_samples, warmup = warmup,chains = chains)
+
+```
+
+
+```{r}
+# diagnostics
+theta_names = colnames(draws_gp[[1]])
+mcmc_trace(draws_gp, pars = theta_names[1:10])
+mcmc_trace(draws_gp, pars = theta_names[11:11])
+mcmc_intervals(draws_gp, pars = theta_names[1:10])
+mcmc_intervals(draws_gp, theta_names[11:11])
+
+summary(draws_gp)
+
+```
+
+
+```{r}
+theta_post_gp = 
+  draws_gp %>% 
+  reduce(rbind) %>%
+  as_tibble() %>%
+  select(-eta_deaths) 
+  
+colnames(theta_post_gp) = 
+  paste0(rep(c( "theta_deaths_"),
+             each=categories) , 1:categories)
+theta_post_gp = cbind(S=1:S,as_tibble(theta_post_gp)) %>%
+  gather(posterior, value, -S) %>%
+  mutate(risk_cat = as.factor(gsub(pattern = "_([^_]*)$","",(posterior))), 
+           age_cat = as.factor((as.numeric(extract_numeric(posterior)))*10-5))
+
+theta_post_gp_sum = theta_post_gp %>%
+  group_by(age_cat) %>%
+  summarize(mean = mean(value),
+            low = quantile(value, 0.1),
+            high = quantile(value, 0.9)
+            ) %>%
+  gather(range, value, -mean, -age_cat)
+
+ggplot(theta_post_gp_sum) +
+  geom_point(aes(age_cat, mean, color = age_cat),size=2) +
+  geom_line(aes(age_cat, value, group = age_cat)) +
+  labs(title="Diamond Princess: Risk of Death", color="", y="Fatality Rate", x="Age") + 
+  theme_bw()
+
+
+
+# ggplot(theta_post_gp ) +
+#   geom_violin(aes(age_cat, value, fill = age_cat), alpha=0.5, draw_quantiles = c(0.1, 0.5, 0.9), scale = "width") +
+#   labs(title="Diamond Princess: Risk of Death", color="", y="Fatality Rate", x="Age") + 
+#   ylim(0,.1)+
+#   theme_bw()
+
+
+ggplot(theta_post_gp_sum) +
+  geom_point(aes(age_cat, mean, color = age_cat),size=2) +
+  geom_line(aes(age_cat, value, group = age_cat)) +
+  labs(title="Diamond Princess: Risk of Death\n with 80% Credible Interval", color="", y="Fatality Rate", x="Age") + 
+  theme_bw()
+
+gp_par =
+  draws_gp %>% 
+  reduce(rbind) %>%
+  as_tibble() %>%
+  select(eta_deaths) %>%
+  gather(par, value)
+
+ggplot(gp_par ) +
+  geom_density(aes(value, fill=par), alpha=0.5) +
+  labs(title="GP Pars") + 
+  facet_wrap(~par, scales = "free")+
+  theme_bw()
+
+
+```
+
+Summary Statistics
+
+```{r}
+risk_band_dependent = theta_post_gp %>%
+  group_by(age_cat) %>%
+  summarize(mortality_mean = mean(value),
+            mortality_low = quantile(value, probs = .1),
+            mortality_high = quantile(value, probs = .9))
+
+gp_mortality_fixed_rho = ggplot(risk_band_dependent %>% mutate(age= as.numeric(as.character(age_cat)))) +
+  geom_line(aes(age, mortality_mean)) + 
+  geom_ribbon(aes(age, ymin=mortality_low, ymax=mortality_high), fill= "blue", alpha=.2)+
+  theme_bw() + 
+  labs(title="GP Model - Fatality Rate: 80% Credible Interval")+
+  scale_x_continuous(breaks = diamond$age)
+gp_mortality_fixed_rho
+
+risk_band_dependent
+
+```
+
+
+
+
+
+#### Gaussian Process Model - Variable Rho
+
+```{r}
+
+# Identify the data input for Greta using the as_data function
+
+categories = nrow(diamond)
+exposure = as_data(diamond$exposure)
+ages = as_data(diamond$age)
+
+infected = as_data(diamond$confirmed)
+symptomatic= as_data(diamond$symptomatic)
+asymptomatic= as_data(diamond$asymptomatic)
+deaths = as_data(diamond$deaths)
+
+
+# Define the prior for the theta parameter
+#theta_infected = beta(shape1 = 1, shape2 = 1, dim = categories)
+#theta_symptomatic = beta(shape1 = 1, shape2 = 1, dim = categories)
+#theta_asymptomatic = beta(shape1 = 1, shape2 = 1, dim = categories)
+
+eta_deaths = lognormal(0, 20)
+
+rho_mean = 20; rho_sd = 5
+rho_deaths = lognormal(log(rho_mean/sqrt(1+rho_sd^2/rho_mean^2)), sdlog = sqrt(log(1+rho_sd^2/rho_mean^2)))
+
+# kernel & GP
+kernel = rbf(rho_deaths, eta_deaths) 
+f = gp(ages, kernel)  
+theta_deaths = ilogit(f) # convert to unit interval
+
+# Define the likehood for the model
+#distribution(infected) = binomial(size = exposure, prob = theta_infected, dim = categories)  
+#distribution(symptomatic) = binomial(size = exposure, prob = theta_symptomatic, dim = categories)  
+#distribution(asymptomatic) = binomial(size = exposure, prob = theta_asymptomatic, dim = categories)
+distribution(deaths) = binomial(size = infected, prob = theta_deaths, dim = categories)  
+
+```
+
+We can now establish and compile the model:
+
+```{r results="hide"}
+# Establish the model
+#m_gp= model(theta_deaths, eta_deaths, rho_deaths)
+m_gp_var= model(theta_deaths, eta_deaths, rho_deaths) 
+
+n_samples = n_samples_base; chains=chains_base; warmup=warmup_base*4
+S = n_samples * chains # Total number of simulations
+draws_gp_var=mcmc(m_gp_var, n_samples = n_samples, warmup = warmup,chains = chains)
+
+```
+
+
+```{r}
+# diagnostics
+theta_names = colnames(draws_gp_var[[1]])
+mcmc_trace(draws_gp_var, pars = theta_names[1:10])
+mcmc_trace(draws_gp_var, pars = theta_names[11:12])
+mcmc_intervals(draws_gp_var, pars = theta_names[1:10])
+mcmc_intervals(draws_gp_var, theta_names[11:12])
+
+summary(draws_gp_var)
+
+```
+
+
+```{r}
+theta_post_gp_var = 
+  draws_gp_var %>% 
+  reduce(rbind) %>%
+  as_tibble() %>%
+  select(-eta_deaths, -rho_deaths) 
+  
+colnames(theta_post_gp_var) = 
+  paste0(rep(c( "theta_deaths_"),
+             each=categories) , 1:categories)
+
+theta_post_gp_var = as_tibble(theta_post_gp_var) %>%
+  mutate(S=1:S) %>%
+  gather(posterior, value, -S) %>%
+  mutate(risk_cat = as.factor(gsub(pattern = "_([^_]*)$","",(posterior))), 
+           age_cat = as.factor((as.numeric(extract_numeric(posterior)))*10-5))
+
+theta_post_gp_var_sum = theta_post_gp_var %>%
+  group_by(age_cat) %>%
+  summarize(mean = mean(value),
+            low = quantile(value, 0.1),
+            high = quantile(value, 0.9)
+            ) %>%
+  gather(range, value, -mean, -age_cat)
+
+ggplot(theta_post_gp_var_sum) +
+  geom_point(aes(age_cat, mean, color = age_cat),size=2) +
+  geom_line(aes(age_cat, value, group = age_cat)) +
+  labs(title="Diamond Princess: Risk of Death\n with 80% Credible Interval", color="", y="Fatality Rate", x="Age") + 
+  theme_bw()
+
+
+# ggplot(theta_post_gp_var) +
+#   geom_violin(aes(age_cat, value, fill = age_cat), alpha=0.5, draw_quantiles = c(0.1, 0.5, 0.9), scale = "width") +
+#   labs(title="Diamond Princess: Risk of Death", color="", y="Fatality Rate", x="Age") + 
+#   ylim(0,.2)+
+#   theme_bw()
+
+gp_par = 
+  draws_gp_var %>% 
+  reduce(rbind) %>%
+  as_tibble() %>%
+  select(eta_deaths, rho_deaths) %>%
+  gather(par, value)
+
+gp_par_plot = ggplot(gp_par) +
+  geom_density(aes(value, fill=par), alpha=0.5) +
+  labs(title="GP Pars") + 
+  facet_wrap(~par, scales = "free")+
+  theme_bw()
+gp_par_plot
+
+```
+
+```{r}
+risk_band = theta_post_gp_var %>%
+  group_by(age_cat) %>%
+  summarize(mortality_mean = mean(value),
+            mortality_low = quantile(value, probs = .1),
+            mortality_high = quantile(value, probs = .9))
+
+gp_mortality = ggplot(risk_band %>% mutate(age= as.numeric(as.character(age_cat)))) +
+  geom_line(aes(age, mortality_mean)) + 
+  geom_ribbon(aes(age, ymin=mortality_low, ymax=mortality_high), fill= "blue", alpha=.2)+
+  theme_bw() + 
+  labs(title="GP Model - Fatality Rate: 80% Credible Interval")+
+  scale_x_continuous(breaks = diamond$age)
+gp_mortality
+
+risk_band
+
+```
+
+
+
+# Summary of Results
+
+## A. Combined Age Category Model
+
+### Risk Rates
+
+The theta (or $\theta$) amounts represent the parameters of the binomial distribution and are the rates or infection of fatality.
+
+```{r echo=FALSE}
+combined_risk_rates
+```
+
+
+## B. Independent Age Category Model
+
+### Risk Rates
+
+```{r echo=FALSE}
+vector_risk_rates
+vector_mortality_rates
+```
+
+
+Notes: There are very limited data for the age categories 5, 15 and 95.  Here the uniform plays an outsize role, the resultant posterior values for these age buckets suggests a uniform prior might not be the most optimal prior, and a prior skewed towards lower risk rates might be more appropriate.
+
+## C. Gaussian Process Model: Fixed Rho
+
+Fixed $\rho=10$
+
+### Fatality Rates
+
+```{r echo=FALSE}
+gp_mortality_fixed_rho
+```
+
+
+## C. Gaussian Process Model: Variable Rho
+
+Fixed $\rho=10$
+
+### Fatality Rates
+
+```{r echo=FALSE}
+gp_mortality
+```
+
+### Model Parameters
+
+
+```{r echo=FALSE}
+gp_par_plot
+```

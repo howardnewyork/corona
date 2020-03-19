@@ -1,0 +1,438 @@
+---
+title: 'Coronavirus Time Series Analysis'
+output:
+  word_document: default
+  html_notebook: default
+  html_document:
+    df_print: paged
+---
+
+# Introduction
+
+
+The current date of this analysis is March 17, 2020.
+
+All code and data can be found on [Github](https://github.com/howardnewyork/corona).
+
+# Summary of Results
+
+This report analyzes the growth rate in Covid-19 confirmed cases and deaths by country. In particular, I have reviewed the "aligned" growth in confirmed cases and deaths. That is, for each country I aligned the data to start: 
+
+* For confirmed case analysis: The day when 200 cases were confirmed in each respective country
+* For deaths analysis: The day when 10 deaths were confirmed in each respective country
+
+My view is that in an exponential growth scenario (which we are in), it is the growth rate that is all important rather than the nominal number of confirmed cases or deaths. This is what the analysis focuses on. A country with low infected numbers but a high growth rate will quickly overtake a country with high infections but low growth rate.  For example, compare Italian vs. Chinese deaths below.
+
+The data has some good news.  China and South Korea have managed to remarkably bring down the growth of new infections and deaths.  Other countries do not have such good news and the confirmed cases and deaths are doubling every four or five days.  Although Italy is experiencing a total disaster, it appears as if the severe exponential growth it was experiencing is slowing a little. The growth rates in Italy are still very high but trending in the right direction.  Let's see if this trend will continue.
+
+For US and other European countries, the news is uniformally bad. These countries seem to be following more the Italian model rather than the South Korean one.
+
+I note that the Chinese data is so good that it seems suspect. They had only 25 new infections and 13 deaths on March 19.  Given their early problems and wide exposure, the new data seem too good to be true.
+
+In summary, there is an inkling of good news in the Italian data and hopefully the trend continues.  South Korea and China (if the data are correct) show that the virus can be beat, BUT at this stage radical control of population movement is likely necessary (per Italian and Chinese model).  
+
+
+# Methodology
+
+I used a Gaussian Process model to establish the mean growth rates.  Raw growth rates were determined as:
+
+* Confirmed case growth rate:  $Confirmed~Case~ Growth~Rate_t = log(Confirmed~Cases_{t} / Confirmed~Cases_{t-1} )$
+* Confirmed death growth rate:  $Deaths~Case~ Growth~Rate_t = log(Confirmed~Deaths_{t} / Confirmed~Deaths_{t-1} )$
+
+I then calculate a 95% credible around such mean estimate.
+
+
+# Data Sources
+
+[Johns Hopkins COID-19 Data Repository](https://github.com/CSSEGISandData/COVID-19/compare?expand=1)
+
+Note: the data are very messy and  dependent on differing testing regimes rather than true infection experience.
+
+
+```{r setup, include=FALSE, echo=FALSE}
+knitr::opts_chunk$set(echo = FALSE, fig.width = 12, fig.height = 8, warnings= FALSE)
+```
+
+```{r echo=FALSE, message=FALSE}
+# Time Series Analysis of Survival from Breast Cancer
+
+
+library(rstan)
+options(mc.cores = min(8,parallel::detectCores()))
+rstan_options(auto_write = TRUE)
+
+library(ggplot2)
+library(dplyr)
+library(purrr)
+library(tidyr)
+library(readr)
+library(stringr)
+library (bayesplot)
+library(lubridate)
+library(corrplot)
+
+# MCMC Pars
+iter = 350
+warmup = 150
+chains = 8
+
+
+
+# Set Directories
+working_dir = paste0(getwd(), "/")
+data_dir = paste0(working_dir, "data/")
+output_dir = paste0(working_dir, "output/")
+stan_dir = paste0(working_dir, "stan/")
+
+#parameters
+selected_countries = c("Germany", "France", "Spain", "China", "Australia", "US", "South Korea", "Italy",  "United Kingdom")
+cutoff= 200
+cutoff_deaths= 10
+file_date = "2020_03_17"
+
+# Load Data for Confirmed Cases
+corona_raw = read_csv(file = paste0(data_dir, paste0("time_series_19_covid_", file_date, ".csv")))
+
+corona = corona_raw %>%
+  mutate(country = if_else(country == "Korea, South", "South Korea", country))  %>%  
+  select(-lat, -long, -province_state) %>%
+  group_by(country) %>%
+  summarise_all(sum) %>%
+  gather(date, confirmed, -country) %>%
+  group_by(country) %>%
+  mutate(date = mdy(date)) %>%
+  arrange(date) %>%
+  mutate(growth = confirmed - lag(confirmed),
+         growth_rate = log(confirmed / lag(confirmed))) %>%
+  arrange(date) %>%
+  mutate(growth_rate = ifelse(is.finite(growth_rate), growth_rate, NA))  
+
+
+corona_align = corona %>%
+  filter(country %in% selected_countries,
+         confirmed >=cutoff) %>%
+  ungroup() %>%
+  group_by(country) %>%
+  mutate(day = date-first(date)+1) %>%
+  select(country,confirmed, growth,growth_rate, date, day) %>%
+  arrange(day) %>%
+  remove_missing()
+
+deaths_raw = read_csv(file = paste0(data_dir, paste0("time_series_19_covid_deaths_", file_date, ".csv")))
+
+deaths = deaths_raw %>%
+  mutate(country = if_else(country == "Korea, South", "South Korea", country))  %>%  
+  select(-lat, -long, -province_state) %>%
+  group_by(country) %>%
+  summarise_all(sum) %>%
+  gather(date, confirmed, -country) %>%
+  group_by(country) %>%
+  mutate(date = mdy(date)) %>%
+  arrange(date) %>%
+  mutate(growth = confirmed - lag(confirmed),
+         growth_rate = log(confirmed / lag(confirmed))) %>%
+  arrange(date) %>%
+  mutate(growth_rate = ifelse(is.finite(growth_rate), growth_rate, NA))  
+
+
+deaths_align = deaths %>%
+  filter(country %in% selected_countries,
+         confirmed >=cutoff_deaths) %>%
+  ungroup() %>%
+  group_by(country) %>%
+  mutate(day = date-first(date)+1) %>%
+  select(country,confirmed, growth,growth_rate, date, day) %>%
+  arrange(day) %>%
+  remove_missing()
+
+
+```
+
+
+
+# Data Exploration
+
+
+```{r echo=FALSE}
+ggplot(corona %>% filter(country %in% selected_countries)) +
+  geom_line(aes(date,confirmed, color=country)) + 
+  geom_point(aes(date,confirmed, color=country, shape=country)) + 
+  labs(title = "Confirmed Cases by Country", x="Date", y="Confirmed Cases")+
+   scale_y_continuous( labels = scales::comma) +
+  theme_bw()
+
+if (F){
+ggplot(corona %>% filter(country %in% selected_countries)) +
+  geom_line(aes(date,growth, color=country)) + 
+  labs(title = "Growth in Confirmed Cases by Country", x="Date", y="Growth in Confirmed Cases")+
+   scale_y_continuous( labels = scales::comma)
+
+corona %>%  filter(country %in% selected_countries, confirmed >=10) %>% select(date, confirmed, growth_rate, growth_rate) %>% 
+
+ggplot() +
+  geom_line(aes(date,growth_rate, color=country)) + 
+  labs(title = "Growth in Confirmed Cases by Country", x="Date", y="Daily Growth Rate")+
+  scale_y_continuous( labels = scales::comma) +
+  theme_bw() +
+  coord_cartesian(ylim=c(-1, 3))
+}
+
+
+```
+
+```{r echo=FALSE}
+
+
+ggplot(corona_align ) +
+  geom_line(aes(day,confirmed, color=country)) + 
+  geom_point(aes(day,confirmed, color=country, shape=country)) + 
+  labs(title = "Aligned Confirmed Cases by Country", x=paste0(c("Days after", cutoff, " Cases"), collapse = ""), y="Confirmed Cases")+
+   scale_y_continuous( labels = scales::comma) + theme_bw()
+
+if (F){
+ggplot(corona_align ) +
+  geom_line(aes(day,growth, color=country)) + 
+  geom_point(aes(day,growth, color=country, shape=country)) + 
+  labs(title = "Aligned Growth in Confirmed Cases by Country", x=paste0(c("Days after", cutoff, " Cases"), collapse=""), y="Growth in Confirmed Cases")+
+   scale_y_continuous( labels = scales::comma)
+
+ggplot(corona_align) +
+  geom_line(aes(day,growth_rate, color=country)) + 
+  geom_point(aes(day,growth_rate, color=country, shape=country)) + 
+  labs(title = "Aligned Growth Rate by Country", x=paste0(c("Days after", cutoff, " Cases"), collapse=""), y="Daily Growth Rate")+
+  theme_bw() 
+corona_cor = corona_align %>%
+  select(day, country, growth_rate) %>%
+  pivot_wider(names_from = country, values_from = growth_rate) %>%
+  select(-day) %>% 
+  cor(use = "pairwise.complete.obs")
+corrplot(corona_cor[selected_countries, selected_countries])
+corona_align %>%
+  group_by(country) %>%
+  group_map(~lm(data = .x,  formula =  growth_rate ~ day ))
+
+
+ave_growth = corona_align %>%
+  group_by(country) %>%
+  summarize(mean_growth = mean(growth_rate, na.rm = T),
+            median_growth = median(growth_rate, na.rm = T) )
+
+ggplot(ave_growth %>% pivot_longer(names_to = "type", values_to = "value", -country)) + 
+  geom_point(aes(country, value, color=type), size=2)+ 
+  labs(title = "Mean and Median Growth") + 
+  theme_bw()
+
+}
+
+
+
+
+if (F){
+
+corona_align = corona_align %>%
+  filter(is.finite(growth_rate)) %>%
+  mutate(smoothed = predict(loess(formula =  growth_rate ~ as.numeric(day), na.action = na.omit)))
+
+corona_align
+
+
+ggplot(corona_align) +
+  geom_line(aes(day,smoothed, color=country)) + 
+  geom_point(aes(day,smoothed, color=country, shape=country)) + 
+  labs(title = "Smoothed Aligned Growth Rate by Country", x=paste0(c("Days after", cutoff, " Cases"), collapse=""), 
+       y="Daily Growth Rate")+
+  theme_bw() 
+
+corona_cor2 = corona_align %>%
+  select(day, country, smoothed) %>%
+  pivot_wider(names_from = country, values_from = smoothed) %>%
+  select(-day) %>% 
+  cor(use = "pairwise.complete.obs")
+corrplot(corona_cor2[selected_countries, selected_countries])
+
+#corr2 = corona_cor2
+  
+}
+
+```
+
+
+```{r echo=FALSE}
+ggplot(deaths %>% filter(country %in% selected_countries)) +
+  geom_line(aes(date,confirmed, color=country)) + 
+  geom_point(aes(date,confirmed, color=country, shape=country)) + 
+  labs(title = "Deaths by Country", x="Date", y="Confirmed Cases")+
+   scale_y_continuous( labels = scales::comma) + 
+  theme_bw()
+
+
+ggplot(deaths_align ) +
+  geom_line(aes(day,confirmed, color=country)) + 
+  geom_point(aes(day,confirmed, color=country, shape=country)) + 
+  labs(title = "Aligned Deaths by Country", x=paste0(c("Days after", cutoff_deaths, " Deaths"), collapse = ""), y="Confirmed Cases")+
+   scale_y_continuous( labels = scales::comma) + 
+  theme_bw()
+
+if(F){
+ave_growth_deaths = deaths_align %>%
+  group_by(country) %>%
+  summarize(mean_growth = mean(growth_rate, na.rm = T),
+            median_growth = median(growth_rate, na.rm = T) )
+
+ggplot(ave_growth_deaths %>% pivot_longer(names_to = "type", values_to = "value", -country)) + 
+  geom_point(aes(country, value, color=type), size=2)+ 
+  labs(title = "Mean and Median Daily Growth in Deaths", y= "Daily Growth Rate", x="Country") + 
+  theme_bw()
+}
+
+```
+
+
+# Growth Rate Analysis
+
+```{r echo=FALSE}
+country_count = length(unique(corona_align$country))
+N = nrow(corona_align)
+N_pred = as.numeric(country_count * (max(corona_align$day) - min(corona_align$day)+1))
+
+
+stan_list = list(
+  N1 = N,  # historic data
+  #N2= N_pred,  # predicted points
+  N2= N,  # predicted points
+  D=1, # Dimension of input values
+  dimCat = country_count, # dimension of number oif unique categorical values
+  
+  # Historic Data
+  x1 = matrix(as.numeric(corona_align$day), ncol = 1) ,  # input values (N1 x D matrix from R)
+  x_cat1= as.numeric(as.factor(corona_align$country)),  # input values containing a categorical value
+  y1 = corona_align$growth_rate,  # output values 
+  # Inputs for prediction
+  
+  # x2= matrix(rep(min(corona_align$day):max(corona_align$day), each = country_count), ncol=1),  # input values (N xD matrix from R)
+  # x_cat2 =  rep(1:country_count, times = max(corona_align$day)),  # input values containing a categorical value
+  x2 = matrix(as.numeric(corona_align$day), ncol = 1) ,  # input values (N1 x D matrix from R)
+  x_cat2= as.numeric(as.factor(corona_align$country)),  # input values containing a categorical value
+
+ # inputs for priors on parameters
+ prior_eta = 2,
+ prior_rho = c(5,5),
+ prior_sigma = 1,
+ prior_alpha =2
+)
+```
+
+
+
+```{r echo=FALSE}
+country_count = length(unique(deaths_align$country))
+N = nrow(deaths_align)
+N_pred = as.numeric(country_count * (max(deaths_align$day) - min(deaths_align$day)+1))
+
+
+stan_list_deaths = list(
+  N1 = N,  # historic data
+  #N2= N_pred,  # predicted points
+  N2= N,  # predicted points
+  D=1, # Dimension of input values
+  dimCat = country_count, # dimension of number oif unique categorical values
+  
+  # Historic Data
+  x1 = matrix(as.numeric(deaths_align$day), ncol = 1) ,  # input values (N1 x D matrix from R)
+  x_cat1= as.numeric(as.factor(deaths_align$country)),  # input values containing a categorical value
+  y1 = deaths_align$growth_rate,  # output values 
+  # Inputs for prediction
+  
+  # x2= matrix(rep(min(deaths_align$day):max(deaths_align$day), each = country_count), ncol=1),  # input values (N xD matrix from R)
+  # x_cat2 =  rep(1:country_count, times = max(deaths_align$day)),  # input values containing a categorical value
+  x2 = matrix(as.numeric(deaths_align$day), ncol = 1) ,  # input values (N1 x D matrix from R)
+  x_cat2= as.numeric(as.factor(deaths_align$country)),  # input values containing a categorical value
+
+ # inputs for priors on parameters
+ prior_eta = 2,
+ prior_rho = c(5,5),
+ prior_sigma = 1,
+ prior_alpha =2
+)
+```
+
+
+##  Confirmed Cases
+
+```{r echo=FALSE}
+mod_block = stan_model(file = paste0(stan_dir, "gp_mod2.stan"))
+
+draws_block = sampling(object = mod_block, data = stan_list , chains = chains, iter = iter, warmup=warmup)
+#summary(draws_block, pars = c("eta", "rho", "sigma"))$summary
+```
+
+
+```{r echo=FALSE}
+
+country_names = levels(as.factor(corona_align$country))
+
+preds_block = tibble(
+  day = c(stan_list$x2),
+  country = country_names[stan_list$x_cat2],
+  growth_rate = summary(draws_block, pars = c("fStar"))$summary[,"mean"],
+  gr_low = summary(draws_block, pars = c("fStar"))$summary[,"2.5%"],
+  gr_high = summary(draws_block, pars = c("fStar"))$summary[,"97.5%"]
+)
+
+
+
+ggplot(preds_block)  +
+  geom_line(aes(day, growth_rate, color=country)) + 
+  geom_ribbon(aes(day, ymin=gr_low,ymax=gr_high, fill=country), alpha=0.2) + 
+  geom_point(aes(day, growth_rate, color=country, shape=country))  +
+  labs(title = paste(c("Daily Growth Rate of Infection following\n", cutoff, " confirmed infections"), collapse =""), x=paste0(c("Days after", cutoff, " Cases"), collapse=""), y="Mean Field Growth Rate") + 
+  #coord_cartesian(ylim=c(0, .5))+
+  facet_wrap(~country, scales="free") + 
+  theme_bw()
+  
+
+```
+
+
+
+
+
+
+## Deaths
+
+```{r echo=FALSE}
+
+draws_block_deaths = sampling(object = mod_block, data = stan_list_deaths , chains = chains, iter = iter, warmup=warmup)
+```
+
+
+```{r echo=FALSE }
+
+country_names = levels(as.factor(deaths_align$country))
+
+preds_block_deaths = tibble(
+  day = c(stan_list_deaths$x2),
+  country = country_names[stan_list_deaths$x_cat2],
+  growth_rate = summary(draws_block_deaths, pars = c("fStar"))$summary[,"mean"],
+  gr_low = summary(draws_block_deaths, pars = c("fStar"))$summary[,"2.5%"],
+  gr_high = summary(draws_block_deaths, pars = c("fStar"))$summary[,"97.5%"]
+)
+
+
+
+ggplot(preds_block_deaths)  +
+  geom_line(aes(day, growth_rate, color=country)) + 
+  geom_ribbon(aes(day, ymin=gr_low,ymax=gr_high, fill=country), alpha=0.2) + 
+  geom_point(aes(day, growth_rate, color=country, shape=country))  +
+  labs(title = paste(c("Daily Growth Rate of Deaths following\n", cutoff_deaths, " Confirmed Deaths"), collapse =""), x=paste0(c("Days after", cutoff_deaths, " Deaths"), collapse=""), y="Mean Field Growth Rate") + 
+  #coord_cartesian(ylim=c(0, .5))+
+  facet_wrap(~country, scales="free") + 
+  theme_bw()
+  
+
+```
+
+Note: UK death records are too limited to be reliable.
+
+
+
